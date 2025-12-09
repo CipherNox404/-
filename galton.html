@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Galton Board - Safe Stacking & Visible Gaussian</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: #eee;
+      font-family: sans-serif;
+    }
+    #wrapper {
+      text-align: center;
+    }
+    canvas {
+      border: 1px solid #555;
+      background: #111;
+      display: block;
+      margin: 0 auto 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrapper">
+    <canvas id="board" width="900" height="900"></canvas>
+    <div>Galton Board</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d');
+
+    // 使用者輸入球數量
+    let maxBallsInput = parseInt(
+      prompt("請輸入球的數量(建議不要超過40）:", "40"),
+      10
+    );
+    if (!Number.isFinite(maxBallsInput) || maxBallsInput <= 0) {
+      maxBallsInput = 60;
+    }
+
+    // ===== 幾何設定 =====
+    const rows = 9;                       // 針的列數
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+
+    // 整個 Galton 板有效寬度（= 桶子總寬）
+    const boardWidth = 360;
+    const marginX = (canvasWidth - boardWidth) / 2;  // 置中
+    const centerX = canvasWidth / 2;
+
+    // 針區域
+    const boardTop = 160;                 // Galton 針區上緣
+    const boardBottom = 360;              // 針區下緣
+    const pinSpacingX = boardWidth / rows;
+    const pinSpacingY = 30;
+
+    // 桶子區域
+    const binTopY = 430;                  // 桶子上緣
+    const binBaseY = 860;                 // 桶子底部
+    const binHeight = binBaseY - binTopY;
+
+    // 桶子 / 球設定
+    const numBins = rows + 1;             // 10 個桶子
+    const binWidth = boardWidth / numBins;
+    const ballRadius = 5;                 // 球直徑 10px
+    const stackGap = 2;                   // 球與球之間的縫隙
+
+    // =====「最高不碰釘子」的安全高度計算 =====
+    // 安全線：釘子區最低點以下一點（越大 y 越靠下）
+    const safeTopY = boardBottom + 10;    // 球堆最頂不能比這更上面
+    const baseStackY = binBaseY - ballRadius - 2; // 第一層球心 y
+    const levelHeight = 2 * ballRadius + stackGap;
+    const availableHeight = baseStackY - safeTopY;
+    const maxBallsAllowed = Math.max(
+      1,
+      Math.floor(availableHeight / levelHeight)
+    );
+
+    let maxBalls = maxBallsInput;
+    if (maxBalls > maxBallsAllowed) {
+      alert(
+        "就說了最多只能 "
+        + maxBallsAllowed + " !"
+      );
+      maxBalls = maxBallsAllowed;
+    }
+
+    // 每層高度固定 → 圖一定不互相蓋住
+    const unitHeight = levelHeight;
+
+    // 每個桶子目前有幾顆球（第幾層）
+    const binsCount = new Array(numBins).fill(0);
+
+    // 釘子位置（等腰三角形鋪滿整個板子寬）
+    const startY = boardTop + 30;
+    const pinsRadius = 5;
+    const pins = [];
+    for (let r = 0; r < rows; r++) {
+      const numPinsRow = r + 1;
+      const y = startY + r * pinSpacingY;
+      const rowWidth = (numPinsRow - 1) * pinSpacingX;
+      const startX = centerX - rowWidth / 2;
+      for (let i = 0; i < numPinsRow; i++) {
+        pins.push({ x: startX + i * pinSpacingX, y });
+      }
+    }
+
+    // ===== 球的資料 & 物理參數 =====
+    const balls = [];
+    const gravity = 1200;                  // px / s^2
+    const wallMinX = marginX + ballRadius;                     // 左 clamp
+    const wallMaxX = marginX + boardWidth - ballRadius;        // 右 clamp
+    const fallThresholdY = binTopY - ballRadius * 1.5;         // 進桶子的判定線
+
+    let totalSpawned = 0;
+    let showGaussian = false;
+    let gaussianParams = null;
+
+    function spawnBall() {
+      if (totalSpawned >= maxBalls) return;
+      balls.push({
+        x: centerX,
+        y: boardTop - 60,
+        vx: (Math.random() - 0.5) * 60,  // 初始一點點左右速度
+        vy: 0,
+        done: false,
+        binIndex: null
+      });
+      totalSpawned++;
+    }
+
+    // 每隔一段時間生成一顆球
+    setInterval(spawnBall, 200);
+
+    // ===== 背景 =====
+    function drawBackground() {
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+      bgGrad.addColorStop(0, '#050505');
+      bgGrad.addColorStop(0.5, '#111');
+      bgGrad.addColorStop(1, '#000');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
+
+    // ===== 外框 3D 盒子（貼合整個裝置） =====
+    function drawFrame() {
+      const fx = marginX;
+      const fw = boardWidth;
+      const fy = boardTop - 40;           // 上方略高
+      const fh = (binBaseY + 20) - fy;    // 下方略低
+
+      const dx = 40;   // 深度水平偏移
+      const dy = -30;  // 深度垂直偏移
+
+      ctx.save();
+
+      // 左側面
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx + dx, fy + dy);
+      ctx.lineTo(fx + dx, fy + fh + dy);
+      ctx.lineTo(fx, fy + fh);
+      ctx.closePath();
+      const leftGrad = ctx.createLinearGradient(fx, 0, fx + dx, 0);
+      leftGrad.addColorStop(0, '#050505');
+      leftGrad.addColorStop(1, '#222');
+      ctx.fillStyle = leftGrad;
+      ctx.fill();
+
+      // 右側面
+      ctx.beginPath();
+      ctx.moveTo(fx + fw, fy);
+      ctx.lineTo(fx + fw + dx, fy + dy);
+      ctx.lineTo(fx + fw + dx, fy + fh + dy);
+      ctx.lineTo(fx + fw, fy + fh);
+      ctx.closePath();
+      const rightGrad = ctx.createLinearGradient(fx + fw, 0, fx + fw + dx, 0);
+      rightGrad.addColorStop(0, '#050505');
+      rightGrad.addColorStop(1, '#333');
+      ctx.fillStyle = rightGrad;
+      ctx.fill();
+
+      // 上表面
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx + dx, fy + dy);
+      ctx.lineTo(fx + fw + dx, fy + dy);
+      ctx.lineTo(fx + fw, fy);
+      ctx.closePath();
+      const topGrad = ctx.createLinearGradient(0, fy + dy, 0, fy);
+      topGrad.addColorStop(0, '#444');
+      topGrad.addColorStop(1, '#777');
+      ctx.fillStyle = topGrad;
+      ctx.fill();
+
+      // 前面板
+      const frontGrad = ctx.createLinearGradient(0, fy, 0, fy + fh);
+      frontGrad.addColorStop(0, '#333');
+      frontGrad.addColorStop(0.5, '#181818');
+      frontGrad.addColorStop(1, '#050505');
+      ctx.fillStyle = frontGrad;
+      ctx.fillRect(fx, fy, fw, fh);
+
+      // 內緣亮線
+      ctx.strokeStyle = '#aaaaaa';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(fx + 4, fy + 4, fw - 8, fh - 8);
+
+      ctx.restore();
+    }
+
+    // ===== 底部桶子 3D =====
+    function drawBins3D() {
+      ctx.save();
+
+      const fx = marginX;
+      const fw = boardWidth;
+      const fy = binTopY;
+      const fh = binHeight;
+
+      const dx = 18;
+      const dy = -12;
+
+      // 背板
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx + fw, fy);
+      ctx.lineTo(fx + fw, fy + fh);
+      ctx.lineTo(fx, fy + fh);
+      ctx.closePath();
+      const backGrad = ctx.createLinearGradient(0, fy, 0, fy + fh);
+      backGrad.addColorStop(0, '#262626');
+      backGrad.addColorStop(1, '#101010');
+      ctx.fillStyle = backGrad;
+      ctx.fill();
+
+      // 上表面
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx + dx, fy + dy);
+      ctx.lineTo(fx + fw + dx, fy + dy);
+      ctx.lineTo(fx + fw, fy);
+      ctx.closePath();
+      const topGrad = ctx.createLinearGradient(0, fy + dy, 0, fy);
+      topGrad.addColorStop(0, '#777');
+      topGrad.addColorStop(1, '#bbb');
+      ctx.fillStyle = topGrad;
+      ctx.fill();
+
+      // 右側面
+      ctx.beginPath();
+      ctx.moveTo(fx + fw, fy);
+      ctx.lineTo(fx + fw + dx, fy + dy);
+      ctx.lineTo(fx + fw + dx, fy + fh + dy);
+      ctx.lineTo(fx + fw, fy + fh);
+      ctx.closePath();
+      const rightGrad = ctx.createLinearGradient(fx + fw, 0, fx + fw + dx, 0);
+      rightGrad.addColorStop(0, '#111');
+      rightGrad.addColorStop(1, '#333');
+      ctx.fillStyle = rightGrad;
+      ctx.fill();
+
+      // 前緣（桶子嘴巴）
+      const lipHeight = 14;
+      const lipY = binBaseY;
+      const lipGrad = ctx.createLinearGradient(0, lipY, 0, lipY + lipHeight);
+      lipGrad.addColorStop(0, '#b0b0b0');
+      lipGrad.addColorStop(0.5, '#777');
+      lipGrad.addColorStop(1, '#444');
+      ctx.fillStyle = lipGrad;
+      ctx.fillRect(fx, lipY, fw, lipHeight);
+
+      // 桶子分隔線
+      ctx.strokeStyle = 'rgba(230,230,230,0.35)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < numBins; i++) {
+        const x = fx + i * binWidth;
+        ctx.beginPath();
+        ctx.moveTo(x, fy);
+        ctx.lineTo(x, fy + fh);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // ===== 釘子 =====
+    function drawPins() {
+      for (const p of pins) {
+        // 陰影
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.beginPath();
+        ctx.ellipse(p.x + 2, p.y + 3, 4, 2, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+        ctx.restore();
+
+        // 本體
+        const grad = ctx.createRadialGradient(
+          p.x - 1, p.y - 1, 0,
+          p.x, p.y, pinsRadius
+        );
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.4, '#d0d0d0');
+        grad.addColorStop(1, '#666666');
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pinsRadius, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+    }
+
+    // ===== 用實際桶子結果擬合 Gaussian =====
+    function fitGaussianFromBins() {
+      const counts = binsCount.slice();
+      const total = counts.reduce((a, b) => a + b, 0);
+      if (total === 0) return null;
+
+      // 樣本平均 μ
+      let mean = 0;
+      for (let k = 0; k < numBins; k++) {
+        mean += k * counts[k];
+      }
+      mean /= total;
+
+      // 樣本變異數 σ²
+      let variance = 0;
+      for (let k = 0; k < numBins; k++) {
+        const diff = k - mean;
+        variance += counts[k] * diff * diff;
+      }
+      variance /= total;
+      let sigma = Math.sqrt(variance);
+      if (sigma === 0) sigma = 0.1;
+
+      // 振幅 A：讓 Gaussian peak 大約 ≈ 最大桶子高度（以「球數」為單位）
+      const maxCount = Math.max(...counts);
+      let maxG = 0;
+      for (let k = 0; k < numBins; k++) {
+        const g = Math.exp(-0.5 * ((k - mean) / sigma) ** 2);
+        if (g > maxG) maxG = g;
+      }
+      const A = maxCount / (maxG || 1);
+
+      return { mu: mean, sigma, A };
+    }
+
+    // ===== 高斯：用同一個 unitHeight 貼合桶子頂 =====
+    function drawGaussianCurveFitted() {
+      if (!gaussianParams) return;
+      const { mu, sigma, A } = gaussianParams;
+
+      // baseY = 第一層球心的位置，往上扣 A*unitHeight
+      const baseY = baseStackY;
+
+      ctx.save();
+      ctx.beginPath();
+      const steps = 200;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const xBin = t * (numBins - 1);   // 0 ~ numBins-1 的連續位置
+        const g = A * Math.exp(-0.5 * ((xBin - mu) / sigma) ** 2); // 預測「球數」
+        const x = marginX + (xBin + 0.5) * binWidth;
+        const y = baseY - g * unitHeight; // 用同一個單位高度
+
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#55ffcc';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ===== 物理更新：隨機掉落 + 撞釘子只改 vx，不往上彈 =====
+    function updatePhysics(dt) {
+      for (const b of balls) {
+        if (b.done) continue;
+
+        // 重力
+        b.vy += gravity * dt;
+
+        // 位置
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+
+        // 左右邊界：只 clamp，不反彈
+        if (b.x < wallMinX) b.x = wallMinX;
+        if (b.x > wallMaxX) b.x = wallMaxX;
+
+        // 在 Galton 裝置區域時，才判定與釘子的碰撞
+        if (b.y > boardTop && b.y < boardBottom + 20) {
+          for (const p of pins) {
+            const dx = b.x - p.x;
+            const dy = b.y - p.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const minDist = ballRadius + pinsRadius;
+
+            if (dist > 0 && dist < minDist) {
+              // 輕微推出，避免球心穿過釘子
+              const overlap = minDist - dist;
+              const nx = dx / dist;
+              const ny = dy / dist;
+              b.x += nx * overlap;
+              b.y += ny * overlap;
+
+              // 只調整水平速度，保持 vy 向下 → 看起來像撞到後往左/右偏
+              const side = Math.random() < 0.5 ? -1 : 1;
+              b.vx += side * 80;
+
+              // vy 一律保持向下（不會往上彈）
+              b.vy = Math.abs(b.vy);
+              if (b.vy < 200) b.vy = 200;
+            }
+          }
+        }
+
+        // 掉到桶子上緣以下 → 判定進入桶子，開始垂直堆疊（不再做物理）
+        if (b.y >= fallThresholdY) {
+          // 決定落在哪個桶子
+          const t = (b.x - marginX) / boardWidth;
+          let binIndex = Math.floor(t * numBins);
+          if (binIndex < 0) binIndex = 0;
+          if (binIndex >= numBins) binIndex = numBins - 1;
+          b.binIndex = binIndex;
+
+          // 該桶子目前有幾顆 → 這顆就是第幾層
+          const level = binsCount[binIndex];
+          binsCount[binIndex]++;
+
+          // 對齊桶子中央
+          const cx = marginX + (binIndex + 0.5) * binWidth;
+          b.x = cx;
+
+          // 一顆疊一顆：從底部往上，每層固定距離 unitHeight
+          const yTop = baseStackY - level * unitHeight;
+          b.y = yTop;
+
+          // 停止物理
+          b.vx = 0;
+          b.vy = 0;
+          b.done = true;
+        }
+      }
+
+      // 判定「所有球都已經掉完 + 停好」 → 擬合 Gaussian
+      if (!showGaussian && totalSpawned >= maxBalls) {
+        const allDone = balls.length === maxBalls && balls.every(b => b.done);
+        if (allDone) {
+          gaussianParams = fitGaussianFromBins();
+          showGaussian = true;
+        }
+      }
+    }
+
+    // ===== 畫球 =====
+    function drawBalls() {
+      for (const b of balls) {
+        // 陰影
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.ellipse(
+          b.x + ballRadius * 0.3,
+          b.y + ballRadius * 0.7,
+          ballRadius * 1.1,
+          ballRadius * 0.6,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fillStyle = '#000';
+        ctx.fill();
+        ctx.restore();
+
+        // 球本體漸層
+        const grad = ctx.createRadialGradient(
+          b.x - ballRadius * 0.5,
+          b.y - ballRadius * 0.5,
+          ballRadius * 0.2,
+          b.x, b.y,
+          ballRadius
+        );
+        grad.addColorStop(0, '#ffe6e6');
+        grad.addColorStop(0.4, '#ff7a7a');
+        grad.addColorStop(1, '#550000');
+
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, ballRadius, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+    }
+
+    // ===== 主迴圈 =====
+    let lastTime = null;
+    function loop(timestamp) {
+      if (lastTime === null) lastTime = timestamp;
+      const dt = Math.min((timestamp - lastTime) / 1000, 0.03);
+      lastTime = timestamp;
+
+      drawBackground();
+      drawFrame();
+      drawBins3D();
+      updatePhysics(dt);
+      drawPins();
+      drawBalls();
+      if (showGaussian) {
+        // 高斯畫在最後，壓在畫面最上層，絕對不會「被蓋住」
+        drawGaussianCurveFitted();
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
+
