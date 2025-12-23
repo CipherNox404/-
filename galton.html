@@ -37,7 +37,7 @@
 
     // 使用者輸入球數量
     let maxBallsInput = parseInt(
-      prompt("請輸入球的數量(建議不要超過40）:", "40"),
+      prompt("請輸入球的數量(建議不要超過100）:", "40"),
       10
     );
     if (!Number.isFinite(maxBallsInput) || maxBallsInput <= 0) {
@@ -79,7 +79,7 @@
     const availableHeight = baseStackY - safeTopY;
     const maxBallsAllowed = Math.max(
       1,
-      Math.floor(availableHeight / levelHeight)
+	  100
     );
 
     let maxBalls = maxBallsInput;
